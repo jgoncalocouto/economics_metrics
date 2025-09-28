@@ -129,16 +129,50 @@ def fetch_series_dataframe(
     raw_csv = _retrieve_series_csv(series, session=session)
 
     try:
-        frame = pd.read_csv(BytesIO(raw_csv), parse_dates=["DATE"], na_values={series.series_id: ["."]})
+        frame = pd.read_csv(
+            BytesIO(raw_csv),
+            na_values={series.series_id: ["."]},
+            encoding="utf-8-sig",
+        )
     except (ValueError, pd.errors.ParserError, UnicodeDecodeError) as exc:
         raise DownloadError(f"Unable to parse data for {series.series_id}: {exc}") from exc
 
-    if "DATE" not in frame:
-        raise DownloadError(f"Malformed data received for {series.series_id}")
+    date_column: str | None = None
+    for column in frame.columns:
+        if column.strip().upper() == "DATE":
+            date_column = column
+            break
 
-    frame = frame.set_index("DATE").sort_index()
-    if series.series_id in frame:
-        frame[series.series_id] = pd.to_numeric(frame[series.series_id], errors="coerce")
+    if not date_column:
+        raise DownloadError(f"Malformed data received for {series.series_id}: missing DATE column")
+
+    if date_column != "DATE":
+        frame = frame.rename(columns={date_column: "DATE"})
+
+    frame["DATE"] = pd.to_datetime(frame["DATE"], errors="coerce")
+    if frame["DATE"].isna().all():
+        raise DownloadError(f"Malformed data received for {series.series_id}: invalid DATE values")
+
+    series_column: str | None = None
+    for column in frame.columns:
+        if column == series.series_id:
+            series_column = column
+            break
+        if column.strip().upper() == series.series_id.upper():
+            series_column = column
+            break
+
+    if series_column and series_column != series.series_id:
+        frame = frame.rename(columns={series_column: series.series_id})
+
+    if series.series_id not in frame:
+        raise DownloadError(
+            f"Malformed data received for {series.series_id}: missing series column"
+        )
+
+    frame[series.series_id] = pd.to_numeric(frame[series.series_id], errors="coerce")
+
+    frame = frame.dropna(subset=["DATE"]).set_index("DATE").sort_index()
     return frame
 
 
