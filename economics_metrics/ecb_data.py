@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import resources
 from io import BytesIO
 from pathlib import Path
 from typing import Mapping, Sequence
 
 import pandas as pd
 import requests
+
+from . import sample_data
 
 ECB_QUICKVIEW_URL = "https://sdw.ecb.europa.eu/quickviewexport.do"
 
@@ -42,6 +45,13 @@ DEFAULT_SERIES: Mapping[str, SeriesConfig] = {
         series_key="FM.M.U2.EUR.RT.MM.EUR.IBOR.3M",
         description="Euro Interbank Offered Rate (3 months)",
     ),
+}
+
+FALLBACK_SERIES_FILES: Mapping[str, str] = {
+    "ea_hicp_all_items": "ecb_hicp_all_items_sample.csv",
+    "ICP.M.U2.N.000000.4.ANR": "ecb_hicp_all_items_sample.csv",
+    "ea_euribor_3m": "ecb_euribor_3m_sample.csv",
+    "FM.M.U2.EUR.RT.MM.EUR.IBOR.3M": "ecb_euribor_3m_sample.csv",
 }
 
 
@@ -105,19 +115,11 @@ def _strip_metadata_lines(raw_csv: bytes) -> bytes:
     return data.encode("utf-8")
 
 
-def fetch_series_dataframe(
-    series: SeriesConfig, session: requests.Session | None = None
-) -> pd.DataFrame:
-    """Return an ECB series as a :class:`pandas.DataFrame`."""
-
-    raw_csv = _retrieve_series_csv(series, session=session)
+def _parse_series_bytes(series: SeriesConfig, raw_csv: bytes, *, source: str) -> pd.DataFrame:
     cleaned_csv = _strip_metadata_lines(raw_csv)
 
     try:
-        frame = pd.read_csv(
-            BytesIO(cleaned_csv),
-            dtype=str,
-        )
+        frame = pd.read_csv(BytesIO(cleaned_csv), dtype=str)
     except (ValueError, pd.errors.ParserError, UnicodeDecodeError) as exc:
         raise DownloadError(f"Unable to parse data for {series.series_key}: {exc}") from exc
 
@@ -160,7 +162,52 @@ def fetch_series_dataframe(
     )
 
     frame = frame.dropna(subset=["TIME_PERIOD"]).set_index("TIME_PERIOD").sort_index()
-    return frame[[series.value_column]]
+    result = frame[[series.value_column]]
+    result.attrs["source"] = source
+    return result
+
+
+def _fallback_bytes(series: SeriesConfig) -> bytes | None:
+    for key in (series.slug, series.series_key):
+        resource_name = FALLBACK_SERIES_FILES.get(key)
+        if not resource_name:
+            continue
+        try:
+            return resources.files(sample_data).joinpath(resource_name).read_bytes()
+        except FileNotFoundError:
+            continue
+    return None
+
+
+def _fetch_with_fallback(
+    series: SeriesConfig, session: requests.Session | None
+) -> pd.DataFrame:
+    try:
+        raw_csv = _retrieve_series_csv(series, session=session)
+        return _parse_series_bytes(series, raw_csv, source="download")
+    except DownloadError as exc:
+        if isinstance(exc.__cause__, requests.RequestException):
+            fallback_csv = _fallback_bytes(series)
+            if fallback_csv is not None:
+                try:
+                    return _parse_series_bytes(series, fallback_csv, source="fallback")
+                except DownloadError:
+                    # Parsing fallback data failed; propagate the original error.
+                    pass
+        raise
+
+
+def fetch_series_dataframe(
+    series: SeriesConfig, session: requests.Session | None = None
+) -> pd.DataFrame:
+    """Return an ECB series as a :class:`pandas.DataFrame`.
+
+    If the live request fails due to a network problem, fallback sample data bundled
+    with the package is returned instead so interactive tools can still operate
+    offline.
+    """
+
+    return _fetch_with_fallback(series, session=session)
 
 
 def download_series_collection(

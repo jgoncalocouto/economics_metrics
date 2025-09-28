@@ -19,7 +19,7 @@ class FetchSeriesDataFrameTests(TestCase):
 
     def setUp(self) -> None:
         self.config = SeriesConfig(
-            slug="euribor_3m",
+            slug="ea_euribor_3m",
             series_key="FM.M.U2.EUR.RT.MM.EUR.IBOR.3M",
             description="Euro Interbank Offered Rate (3 months)",
         )
@@ -47,3 +47,19 @@ TIME_PERIOD,OBS_VALUE,OBS_STATUS
     def test_raises_when_time_period_missing(self) -> None:
         with self.assertRaises(DownloadError):
             self._fetch_with_csv("OBS_VALUE\n2024-01,2\n")
+
+    def test_fallback_used_on_network_failure(self) -> None:
+        def _raise_download_error(*args, **kwargs):
+            from requests import RequestException
+
+            exc = RequestException("network down")
+            raise DownloadError("failed") from exc
+
+        with patch(
+            "economics_metrics.ecb_data._retrieve_series_csv",
+            side_effect=_raise_download_error,
+        ):
+            frame = fetch_series_dataframe(self.config)
+
+        self.assertEqual(frame.attrs.get("source"), "fallback")
+        self.assertFalse(frame.empty)

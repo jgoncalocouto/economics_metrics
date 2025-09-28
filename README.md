@@ -43,3 +43,8 @@ download the filtered data as a CSV file directly from the interface.
 Use the sidebar to switch between US (FRED) and Euro area (ECB) data sources.
 When the ECB option is selected, the dashboard displays the Harmonised Index of
 Consumer Prices (HICP) annual rate and the 3-month Euribor reference rate.
+
+If the app cannot reach the ECB due to a networking problem, it automatically
+falls back to bundled sample data so you can continue exploring the interface.
+The warning banner at the top of the page lists any series that are being
+displayed from the offline samples instead of live data.

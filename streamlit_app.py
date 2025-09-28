@@ -44,23 +44,28 @@ def _load_series(dataset: str, name: str) -> pd.DataFrame:
     column_name_getter = provider["column_name"]
 
     frame = fetch(series)
+    frame_attrs = dict(frame.attrs)
     column_name = column_name_getter(series)
 
     renamed = frame.rename(
         columns={column_name: series.description or series.slug}
     ).copy()
+    renamed.attrs.update(frame_attrs)
     renamed.index.name = "DATE"
     return renamed
 
 
-def _combine_series(dataset: str, selected: list[str]) -> pd.DataFrame:
+def _combine_series(dataset: str, selected: list[str]) -> tuple[pd.DataFrame, list[str]]:
     combined: pd.DataFrame | None = None
+    fallback_used: list[str] = []
     for name in selected:
         frame = _load_series(dataset, name)
+        if frame.attrs.get("source") == "fallback":
+            fallback_used.append(name)
         combined = frame if combined is None else combined.join(frame, how="outer")
     if combined is None:
-        return pd.DataFrame()
-    return combined.sort_index()
+        return pd.DataFrame(), []
+    return combined.sort_index(), fallback_used
 
 
 def _series_options(dataset: str) -> dict[str, str]:
@@ -98,6 +103,7 @@ else:
 
 options = _series_options(selected_dataset)
 labels = list(options.keys())
+name_to_label = {name: label for label, name in options.items()}
 default_selection = labels
 selected_labels = st.multiselect(
     "Select series to display",
@@ -121,7 +127,7 @@ error_classes = (
 )
 
 try:
-    data = _combine_series(selected_dataset, selected_series)
+    data, fallback_series = _combine_series(selected_dataset, selected_series)
 except error_classes as exc:
     error_placeholder.error(f"Failed to download data: {exc}")
     st.stop()
@@ -129,6 +135,13 @@ except error_classes as exc:
 if data.empty:
     st.warning("No data available for the selected series.")
     st.stop()
+
+if fallback_series:
+    friendly_names = ", ".join(name_to_label.get(name, name) for name in fallback_series)
+    st.warning(
+        "Using bundled sample data for the following series due to a network issue: "
+        f"{friendly_names}."
+    )
 
 min_date = data.index.min().to_pydatetime()
 max_date = data.index.max().to_pydatetime()
