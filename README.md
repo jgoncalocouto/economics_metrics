@@ -4,47 +4,19 @@ This repository provides small utilities for downloading publicly available
 macroeconomic datasets. It now supports both United States indicators from
 FRED and Euro area indicators from the European Central Bank (ECB).
 
-## Downloading US CPI and federal funds rate data
 
-The script at `scripts/download_us_macro.py` downloads the following data series
-from the Federal Reserve Economic Data (FRED) service:
+# Everything (Euribor + FX + HICP agg + HICP sector pivots)
+python ecb_suite.py --start 2015-01 --end 2025-09
 
-- `CPIAUCSL` – Consumer Price Index for All Urban Consumers (CPI)
-- `FEDFUNDS` – Effective federal funds rate, a common reference interest rate in
-  the US
+# Only Euribor, custom output
+python ecb_suite.py --run euribor --start 2010-01 --out-euribor euribor_2010_2025.csv
 
-The command below downloads both series into `data/raw/us/`:
+# Only FX with restricted set of currencies
+python ecb_suite.py --run fx --fx-currencies USD,GBP,JPY,CHF --start 2020-01-01
 
-```bash
-python scripts/download_us_macro.py
-```
+# Only HICP aggregates (ANR)
+python ecb_suite.py --run hicp_agg --measure ANR --start 2015-01
 
-To choose a different output directory or download a subset of the available
-series:
+# Only HICP by sector (INX), keep your two exports
+python ecb_suite.py --run hicp_sector --measure INX --start 2015-01
 
-```bash
-python scripts/download_us_macro.py --output-dir path/to/save --series cpi
-```
-
-Use `--no-overwrite` to skip downloading files that already exist.
-
-## Interactive dashboard
-
-Launch the Streamlit application to explore the available series with an
-interactive Plotly chart:
-
-```bash
-streamlit run streamlit_app.py
-```
-
-The dashboard lets you select the series to display, adjust the date range, and
-download the filtered data as a CSV file directly from the interface.
-
-Use the sidebar to switch between US (FRED) and Euro area (ECB) data sources.
-When the ECB option is selected, the dashboard displays the Harmonised Index of
-Consumer Prices (HICP) annual rate and the 3-month Euribor reference rate.
-
-If the app cannot reach the ECB due to a networking problem, it automatically
-falls back to bundled sample data so you can continue exploring the interface.
-The warning banner at the top of the page lists any series that are being
-displayed from the offline samples instead of live data.
