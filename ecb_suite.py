@@ -102,7 +102,7 @@ def download_euribor_all(start: Optional[str], end: Optional[str],
     """Return wide DataFrame with columns for 3M/6M/12M Euribor (monthly)."""
     cols = []
     for name, key in series_map.items():
-        print(f"Fetching {name} …")
+        print(f"Fetching {name}")
         s = fetch_series_retry(key, start=start, end=end).rename(name)
         cols.append(s)
     out = pd.concat(cols, axis=1).sort_index().astype("float64")
@@ -120,7 +120,7 @@ def fetch_exr_daily(codes=CURRENCIES, start: Optional[str] = None, end: Optional
     series = {}
     for cur in codes:
         key = f"EXR.D.{cur}.EUR.SP00.A"
-        print(f"Fetching FX {cur}/EUR …")
+        print(f"Fetching FX {cur}/EUR")
         s = fetch_series_retry(key, start=start, end=end).rename(cur)
         series[cur] = s
     out = pd.concat(series, axis=1).sort_index().astype(float)
@@ -145,7 +145,7 @@ def hicp_all_items_by_country(geos: List[str], measure: str,
     cols = []
     for geo in geos:
         key = _hicp_key(geo, ALL_ITEMS, measure)
-        print(f"Fetching HICP all-items for {geo} [{measure}] …")
+        print(f"Fetching HICP all-items for {geo} [{measure}]")
         s = fetch_series_retry(key, start=start, end=end).rename(geo)
         cols.append(s)
     out = pd.concat(cols, axis=1).sort_index().astype(float)
@@ -161,7 +161,7 @@ def hicp_by_sector_long(geos: List[str], sectors: Dict[str, str], measure: str,
     for sector_name, coicop in sectors.items():
         for geo in geos:
             key = _hicp_key(geo, coicop, measure)
-            print(f"Fetching {sector_name} for {geo} [{measure}] …")
+            print(f"Fetching {sector_name} for {geo} [{measure}]")
             s = fetch_series_retry(key, start=start, end=end)
             if s.empty:
                 continue
