@@ -34,6 +34,10 @@ class FetchSeriesDataFrameTests(TestCase):
         frame = self._fetch_with_csv("date,FEDFUNDS\n2024-01-01,5.25\n")
         self.assertEqual(frame.index[0], pd.Timestamp("2024-01-01"))
 
+    def test_accepts_observation_date_column(self) -> None:
+        frame = self._fetch_with_csv("observation_date,FEDFUNDS\n2024-01-01,5.25\n")
+        self.assertEqual(frame.index[0], pd.Timestamp("2024-01-01"))
+
     def test_raises_when_series_column_missing(self) -> None:
         with self.assertRaises(DownloadError):
             self._fetch_with_csv("DATE,OTHER\n2024-01-01,1\n")

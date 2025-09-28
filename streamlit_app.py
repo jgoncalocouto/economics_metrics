@@ -1,59 +1,109 @@
-"""Streamlit app for exploring US macroeconomic time series."""
+"""Streamlit app for exploring macroeconomic time series."""
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from economics_metrics import DEFAULT_SERIES, DownloadError, fetch_series_dataframe
+from economics_metrics import ecb_data, us_data
 
 
-st.set_page_config(page_title="US Macro Dashboard", layout="wide")
+DATASETS: dict[str, dict[str, Any]] = {
+    "Euro area (ECB)": {
+        "series": ecb_data.DEFAULT_SERIES,
+        "fetch": ecb_data.fetch_series_dataframe,
+        "column_name": lambda config: config.value_column,
+        "error": ecb_data.DownloadError,
+        "download_stub": "euro_area",
+    },
+    "United States (FRED)": {
+        "series": us_data.DEFAULT_SERIES,
+        "fetch": us_data.fetch_series_dataframe,
+        "column_name": lambda config: config.series_id,
+        "error": us_data.DownloadError,
+        "download_stub": "united_states",
+    },
+}
+
+
+st.set_page_config(page_title="Macro Dashboard", layout="wide")
 
 
 @st.cache_data(show_spinner=False)
-def _load_series(name: str) -> pd.DataFrame:
+def _load_series(dataset: str, name: str) -> pd.DataFrame:
     """Load a single series and return a dataframe indexed by date."""
 
-    series = DEFAULT_SERIES[name]
-    frame = fetch_series_dataframe(series)
-    return frame.rename(columns={series.series_id: series.description or series.slug})
+    provider = DATASETS[dataset]
+    series_mapping = provider["series"]
+    series = series_mapping[name]
+    fetch = provider["fetch"]
+    column_name_getter = provider["column_name"]
+
+    frame = fetch(series)
+    column_name = column_name_getter(series)
+
+    renamed = frame.rename(
+        columns={column_name: series.description or series.slug}
+    ).copy()
+    renamed.index.name = "DATE"
+    return renamed
 
 
-def _combine_series(selected: list[str]) -> pd.DataFrame:
+def _combine_series(dataset: str, selected: list[str]) -> pd.DataFrame:
     combined: pd.DataFrame | None = None
     for name in selected:
-        frame = _load_series(name)
+        frame = _load_series(dataset, name)
         combined = frame if combined is None else combined.join(frame, how="outer")
     if combined is None:
         return pd.DataFrame()
     return combined.sort_index()
 
 
-def _series_options() -> dict[str, str]:
+def _series_options(dataset: str) -> dict[str, str]:
+    series_mapping = DATASETS[dataset]["series"]
     return {
-        (config.description or config.slug): name for name, config in DEFAULT_SERIES.items()
+        (config.description or config.slug): name
+        for name, config in series_mapping.items()
     }
 
 
-st.title("US Macroeconomic Dashboard")
-st.markdown(
-    """
-    Explore consumer prices and reference interest rates sourced from
-    [FRED](https://fred.stlouisfed.org/). Choose the series and time range to
-    visualize. Use the download button below the chart to export the selected
-    data as a CSV file.
-    """
+st.sidebar.title("Configuration")
+dataset_names = list(DATASETS.keys())
+selected_dataset = st.sidebar.selectbox(
+    "Data source",
+    dataset_names,
+    index=0,
+    help="Choose whether to load Euro area data from the ECB or US data from FRED.",
 )
 
-options = _series_options()
+st.title("Macroeconomic Dashboard")
+if selected_dataset == "Euro area (ECB)":
+    st.markdown(
+        """
+        Explore Euro area consumer prices and reference interest rates sourced from
+        the European Central Bank's Statistical Data Warehouse.
+        """
+    )
+else:
+    st.markdown(
+        """
+        Explore consumer prices and reference interest rates sourced from the Federal
+        Reserve Economic Data (FRED) service.
+        """
+    )
+
+options = _series_options(selected_dataset)
 labels = list(options.keys())
 default_selection = labels
 selected_labels = st.multiselect(
-    "Select series to display", labels, default=default_selection, help="Choose one or more time series to visualize."
+    "Select series to display",
+    labels,
+    default=default_selection,
+    help="Choose one or more time series to visualize.",
 )
 
 selected_series = [options[label] for label in selected_labels]
@@ -64,9 +114,15 @@ if not selected_series:
     st.info("Select at least one series to display the chart.")
     st.stop()
 
+error_classes = (
+    DATASETS[selected_dataset]["error"],
+    us_data.DownloadError,
+    ecb_data.DownloadError,
+)
+
 try:
-    data = _combine_series(selected_series)
-except DownloadError as exc:
+    data = _combine_series(selected_dataset, selected_series)
+except error_classes as exc:
     error_placeholder.error(f"Failed to download data: {exc}")
     st.stop()
 
@@ -100,7 +156,7 @@ csv_data = filtered.reset_index().to_csv(index=False).encode("utf-8")
 st.download_button(
     "Download filtered data",
     data=csv_data,
-    file_name="us_macro_filtered.csv",
+    file_name=f"{DATASETS[selected_dataset]['download_stub']}_macro_filtered.csv",
     mime="text/csv",
     help="Download the currently displayed data as a CSV file.",
 )

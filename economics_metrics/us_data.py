@@ -137,9 +137,10 @@ def fetch_series_dataframe(
     except (ValueError, pd.errors.ParserError, UnicodeDecodeError) as exc:
         raise DownloadError(f"Unable to parse data for {series.series_id}: {exc}") from exc
 
+    valid_date_headers = {"DATE", "OBSERVATION_DATE"}
     date_column: str | None = None
     for column in frame.columns:
-        if column.strip().upper() == "DATE":
+        if column.strip().upper() in valid_date_headers:
             date_column = column
             break
 

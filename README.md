@@ -1,7 +1,8 @@
 # economics_metrics
 
 This repository provides small utilities for downloading publicly available
-macroeconomic datasets. The initial focus is on United States indicators.
+macroeconomic datasets. It now supports both United States indicators from
+FRED and Euro area indicators from the European Central Bank (ECB).
 
 ## Downloading US CPI and federal funds rate data
 
@@ -38,3 +39,7 @@ streamlit run streamlit_app.py
 
 The dashboard lets you select the series to display, adjust the date range, and
 download the filtered data as a CSV file directly from the interface.
+
+Use the sidebar to switch between US (FRED) and Euro area (ECB) data sources.
+When the ECB option is selected, the dashboard displays the Harmonised Index of
+Consumer Prices (HICP) annual rate and the 3-month Euribor reference rate.
