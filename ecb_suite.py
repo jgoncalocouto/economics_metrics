@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from io import StringIO
 from typing import Dict, List, Optional
 
 import pandas as pd
+import requests
+from requests import RequestException
 from ecbdata import ecbdata
 
 # =========================
@@ -34,6 +37,13 @@ SECTORS: Dict[str, str] = {
 #  - "ANR" (annual rate of change, % YoY)
 #  - "INX" (index, 2015=100)
 MEASURE_CHOICES = {"ANR", "INX"}
+
+# FRED (US) series identifiers
+US_CPI_SERIES_ID = "CPIAUCSL"  # CPI, All Urban Consumers, SA, Index 1982-84=100 (monthly)
+US_RATE_SERIES: Dict[str, str] = {
+    "us_fed_funds": "FEDFUNDS",   # Effective federal funds rate (monthly average)
+    "us_3m_tbill": "TB3MS",      # 3-month Treasury bill secondary market rate
+}
 
 # ECB Euribor series keys (monthly, historical close/avg through period)
 EURIBOR_SERIES: Dict[str, str] = {
@@ -92,6 +102,86 @@ def fetch_series_retry(key: str,
             else:
                 raise
     raise RuntimeError(f"Failed to fetch series {key}: {last_err}")
+
+
+# =========================
+# FRED helpers (US data)
+# =========================
+def _format_date_for_fred(date_str: Optional[str]) -> Optional[str]:
+    """Normalize optional YYYY-MM or YYYY-MM-DD strings to FRED-friendly YYYY-MM-DD."""
+    if not date_str:
+        return None
+    dt = pd.to_datetime(date_str, errors="coerce")
+    if pd.isna(dt):
+        raise ValueError(f"Invalid date format for FRED request: {date_str!r}")
+    return dt.strftime("%Y-%m-%d")
+
+
+def fetch_fred_series(series_id: str,
+                      start: Optional[str] = None,
+                      end: Optional[str] = None) -> pd.Series:
+    """Download a single FRED series as a monthly/daily pandas Series."""
+    params = {"id": series_id}
+    start_fmt = _format_date_for_fred(start)
+    end_fmt = _format_date_for_fred(end)
+    if start_fmt:
+        params["cosd"] = start_fmt
+    if end_fmt:
+        params["coed"] = end_fmt
+
+    url = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+    print(f"Fetching FRED series {series_id}")
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+    except RequestException as exc:
+        raise RuntimeError(f"Failed to download FRED series {series_id}: {exc}") from exc
+    df = pd.read_csv(StringIO(resp.text))
+
+    if "DATE" not in df.columns:
+        raise ValueError(f"Unexpected FRED response for {series_id}: missing DATE column")
+
+    value_col = series_id if series_id in df.columns else None
+    if value_col is None:
+        # Sometimes the column is labelled VALUE
+        for candidate in df.columns:
+            if candidate.upper() == series_id.upper():
+                value_col = candidate
+                break
+        if value_col is None:
+            remaining = [c for c in df.columns if c != "DATE"]
+            if not remaining:
+                raise ValueError(f"Unexpected FRED response for {series_id}: no value column")
+            value_col = remaining[0]
+
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+    series = (df.dropna(subset=["DATE"])
+                .set_index("DATE")[value_col]
+                .dropna()
+                .sort_index())
+    series.name = series_id
+    return series
+
+
+def download_us_inflation(start: Optional[str], end: Optional[str]) -> pd.DataFrame:
+    """Return CPI index and YoY % change for the United States (monthly)."""
+    cpi_index = fetch_fred_series(US_CPI_SERIES_ID, start=start, end=end)
+    df = pd.DataFrame({"cpi_index": cpi_index})
+    df["cpi_yoy_percent"] = cpi_index.pct_change(12) * 100.0
+    return df.dropna(how="all")
+
+
+def download_us_rates(start: Optional[str], end: Optional[str],
+                      series_map: Dict[str, str]) -> pd.DataFrame:
+    """Return wide DataFrame with selected US interest rate benchmarks (monthly)."""
+    cols = []
+    for name, fred_id in series_map.items():
+        series = fetch_fred_series(fred_id, start=start, end=end).rename(name)
+        cols.append(series)
+    if not cols:
+        return pd.DataFrame()
+    return pd.concat(cols, axis=1).sort_index().astype("float64")
 
 
 # =========================
@@ -217,11 +307,11 @@ def pivots_from_hicp_long(df_long: pd.DataFrame,
 # CLI
 # =========================
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="ECB data suite: Euribor (monthly), FX (daily), and HICP (monthly).")
+    p = argparse.ArgumentParser(description="Data suite: ECB (Euribor, FX, HICP) plus US CPI and rates from FRED.")
     p.add_argument("--start", default=None, help="Start (YYYY-MM for monthly; YYYY-MM-DD ok for FX).")
     p.add_argument("--end",   default=None, help="End (YYYY-MM for monthly; YYYY-MM-DD ok for FX).")
     p.add_argument("--run",   default="all",
-                   choices=["all", "euribor", "fx", "hicp_agg", "hicp_sector"],
+                   choices=["all", "euribor", "fx", "hicp_agg", "hicp_sector", "us", "us_inflation", "us_rates"],
                    help="Which part to run (default: all).")
 
     # Euribor / FX outputs
@@ -229,6 +319,12 @@ def parse_args() -> argparse.Namespace:
                    help="Output CSV for Euribor (monthly).")
     p.add_argument("--out-fx",      default="fx_daily_ecb.csv",
                    help="Output CSV for FX daily reference rates.")
+
+    # US outputs
+    p.add_argument("--out-us-inflation", default="us_cpi_inflation.csv",
+                   help="Output CSV for US CPI index and YoY inflation (monthly).")
+    p.add_argument("--out-us-rates", default="us_rates.csv",
+                   help="Output CSV for US benchmark interest rates (monthly).")
 
     # HICP outputs
     p.add_argument("--measure", choices=list(MEASURE_CHOICES), default="ANR",
@@ -284,3 +380,15 @@ if __name__ == "__main__":
 
         df_by_sector.to_csv(args.out_hicp_sector_sector, index=False, float_format="%.4f", date_format="%Y-%m-%d")
         print(f"Saved -> {args.out_hicp_sector_sector}")
+
+    if args.run in ("all", "us", "us_inflation"):
+        df_us_cpi = download_us_inflation(start=args.start, end=args.end)
+        print(df_us_cpi.tail())
+        df_us_cpi.to_csv(args.out_us_inflation, float_format="%.6f", date_format="%Y-%m-%d")
+        print(f"Saved -> {args.out_us_inflation}")
+
+    if args.run in ("all", "us", "us_rates"):
+        df_us_rates = download_us_rates(start=args.start, end=args.end, series_map=US_RATE_SERIES)
+        print(df_us_rates.tail())
+        df_us_rates.to_csv(args.out_us_rates, float_format="%.6f", date_format="%Y-%m-%d")
+        print(f"Saved -> {args.out_us_rates}")
