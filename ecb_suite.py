@@ -8,6 +8,11 @@ from typing import Dict, List, Optional
 import pandas as pd
 from ecbdata import ecbdata
 
+try:
+    from fredapi import Fred
+except ImportError:  # pragma: no cover - optional at runtime if FRED isn't used
+    Fred = None  # type: ignore[assignment]
+
 # =========================
 # Config
 # =========================
@@ -34,6 +39,14 @@ SECTORS: Dict[str, str] = {
 #  - "ANR" (annual rate of change, % YoY)
 #  - "INX" (index, 2015=100)
 MEASURE_CHOICES = {"ANR", "INX"}
+
+# FRED CPI and money-market series
+FRED_INFLATION_SERIES = "CPIAUCSL"  # CPI for All Urban Consumers: All Items
+FRED_INTEREST_RATE_SERIES: Dict[str, str] = {
+    "fed_funds": "FEDFUNDS",    # Effective Federal Funds Rate (monthly, %)
+    "t_bill_3m": "DTB3",        # 3-Month Treasury Bill: Secondary Market Rate (daily, %)
+    "t_bill_6m": "DTB6",        # 6-Month Treasury Bill: Secondary Market Rate (daily, %)
+}
 
 # ECB Euribor series keys (monthly, historical close/avg through period)
 EURIBOR_SERIES: Dict[str, str] = {
@@ -214,15 +227,66 @@ def pivots_from_hicp_long(df_long: pd.DataFrame,
 
 
 # =========================
+# FRED helpers
+# =========================
+def _ensure_fred(api_key: Optional[str]) -> Fred:
+    if Fred is None:
+        raise ImportError("fredapi is required for FRED downloads but is not installed")
+    key = api_key or os.getenv("FRED_API_KEY")
+    if not key:
+        raise EnvironmentError("FRED API key missing. Provide via --fred-api-key or FRED_API_KEY env var.")
+    return Fred(api_key=key)
+
+
+def fetch_fred_inflation(fred: Fred,
+                         series_id: str,
+                         start: Optional[str],
+                         end: Optional[str]) -> pd.DataFrame:
+    series = fred.get_series(series_id, observation_start=start, observation_end=end)
+    df = pd.DataFrame({"cpi_index": series})
+    df["cpi_yoy_pct"] = df["cpi_index"].pct_change(12) * 100
+    df = df.dropna(how="all").sort_index()
+    return df
+
+
+def fetch_fred_interest_rates(fred: Fred,
+                              series_map: Dict[str, str],
+                              start: Optional[str],
+                              end: Optional[str]) -> pd.DataFrame:
+    cols = []
+    for name, series_id in series_map.items():
+        print(f"Fetching FRED rate {name} ({series_id})")
+        s = fred.get_series(series_id, observation_start=start, observation_end=end).rename(name)
+        cols.append(s)
+    if not cols:
+        return pd.DataFrame()
+    df = pd.concat(cols, axis=1).sort_index()
+    return df
+
+
+# =========================
 # CLI
 # =========================
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="ECB data suite: Euribor (monthly), FX (daily), and HICP (monthly).")
-    p.add_argument("--start", default=None, help="Start (YYYY-MM for monthly; YYYY-MM-DD ok for FX).")
-    p.add_argument("--end",   default=None, help="End (YYYY-MM for monthly; YYYY-MM-DD ok for FX).")
-    p.add_argument("--run",   default="all",
-                   choices=["all", "euribor", "fx", "hicp_agg", "hicp_sector"],
-                   help="Which part to run (default: all).")
+    p = argparse.ArgumentParser(description="ECB + FRED data suite: Euribor, FX, HICP, and key US series.")
+    p.add_argument("--start", default=None, help="Start (YYYY-MM for monthly; YYYY-MM-DD ok for FX/FRED).")
+    p.add_argument("--end",   default=None, help="End (YYYY-MM for monthly; YYYY-MM-DD ok for FX/FRED).")
+    p.add_argument(
+        "--run",
+        default="all",
+        choices=[
+            "all",
+            "ecb_all",
+            "euribor",
+            "fx",
+            "hicp_agg",
+            "hicp_sector",
+            "fred",
+            "fred_inflation",
+            "fred_rates",
+        ],
+        help="Which part to run (default: all).",
+    )
 
     # Euribor / FX outputs
     p.add_argument("--out-euribor", default="euribor_3m_6m_12m_ecb.csv",
@@ -244,6 +308,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fx-currencies", default=",".join(CURRENCIES),
                    help="Comma-separated list of FX currencies (e.g., USD,GBP,JPY).")
 
+    # FRED options
+    p.add_argument("--fred-api-key", default=None, help="FRED API key (fallback to FRED_API_KEY env var).")
+    p.add_argument("--out-fred-inflation", default="us_inflation.csv",
+                   help="Output CSV for U.S. CPI level + YoY %.")
+    p.add_argument("--out-fred-rates", default="us_interest_rates.csv",
+                   help="Output CSV for U.S. interest rate series.")
+
     return p.parse_args()
 
 
@@ -256,25 +327,31 @@ if __name__ == "__main__":
     # Parse FX currencies
     fx_codes = [c.strip().upper() for c in args.fx_currencies.split(",") if c.strip()]
 
-    if args.run in ("all", "euribor"):
+    # Determine if any FRED output is requested
+    fred_requested = args.run in {"all", "fred", "fred_inflation", "fred_rates"}
+    fred_client: Optional[Fred] = None
+    if fred_requested:
+        fred_client = _ensure_fred(args.fred_api_key)
+
+    if args.run in ("all", "ecb_all", "euribor"):
         df_eur = download_euribor_all(start=args.start, end=args.end, series_map=EURIBOR_SERIES)
         print(df_eur.tail())
         df_eur.to_csv(args.out_euribor, float_format="%.6f", date_format="%Y-%m-%d")
         print(f"Saved -> {args.out_euribor}")
 
-    if args.run in ("all", "fx"):
+    if args.run in ("all", "ecb_all", "fx"):
         df_fx = fetch_exr_daily(codes=fx_codes, start=args.start, end=args.end)
         print(df_fx.tail())
         df_fx.to_csv(args.out_fx, float_format="%.6f", date_format="%Y-%m-%d")
         print(f"Saved -> {args.out_fx}")
 
-    if args.run in ("all", "hicp_agg"):
+    if args.run in ("all", "ecb_all", "hicp_agg"):
         df_agg = hicp_all_items_by_country(EURO_AREA_CODES, measure=args.measure, start=args.start, end=args.end)
         print(df_agg.head())
         df_agg.to_csv(args.out_hicp_agg, float_format="%.4f", date_format="%Y-%m-%d")
         print(f"Saved -> {args.out_hicp_agg}")
 
-    if args.run in ("all", "hicp_sector"):
+    if args.run in ("all", "ecb_all", "hicp_sector"):
         df_long = hicp_by_sector_long(EURO_AREA_CODES, SECTORS, measure=args.measure, start=args.start, end=args.end)
         print(df_long.head())
 
@@ -284,3 +361,25 @@ if __name__ == "__main__":
 
         df_by_sector.to_csv(args.out_hicp_sector_sector, index=False, float_format="%.4f", date_format="%Y-%m-%d")
         print(f"Saved -> {args.out_hicp_sector_sector}")
+
+    if fred_requested and fred_client is not None and args.run in ("all", "fred", "fred_inflation"):
+        df_us_inflation = fetch_fred_inflation(
+            fred_client,
+            series_id=FRED_INFLATION_SERIES,
+            start=args.start,
+            end=args.end,
+        )
+        print(df_us_inflation.tail())
+        df_us_inflation.to_csv(args.out_fred_inflation, float_format="%.6f", date_format="%Y-%m-%d")
+        print(f"Saved -> {args.out_fred_inflation}")
+
+    if fred_requested and fred_client is not None and args.run in ("all", "fred", "fred_rates"):
+        df_us_interest_rates = fetch_fred_interest_rates(
+            fred_client,
+            series_map=FRED_INTEREST_RATE_SERIES,
+            start=args.start,
+            end=args.end,
+        )
+        print(df_us_interest_rates.tail())
+        df_us_interest_rates.to_csv(args.out_fred_rates, float_format="%.6f", date_format="%Y-%m-%d")
+        print(f"Saved -> {args.out_fred_rates}")
