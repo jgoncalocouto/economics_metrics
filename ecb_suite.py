@@ -1,11 +1,13 @@
 # ecb_suite.py
 from __future__ import annotations
 import argparse
+import io
 import os
 import time
 from typing import Dict, List, Optional
 
 import pandas as pd
+import requests
 from ecbdata import ecbdata
 
 # =========================
@@ -72,6 +74,64 @@ def _normalize_ecb_df(df: pd.DataFrame, date_key="TIME_PERIOD", value_key="OBS_V
     s = pd.to_numeric(s.astype(str).str.replace(",", ".", regex=False), errors="coerce").dropna()
     s.index = pd.to_datetime(s.index)
     return s
+
+
+def fetch_fred_series(series_id: str,
+                      start: Optional[str] = None,
+                      end: Optional[str] = None,
+                      session: Optional[requests.Session] = None,
+                      timeout: float = 30.0) -> pd.Series:
+    """Download and normalize a FRED series (CSV) into a datetime-indexed Series."""
+    params = {"id": series_id}
+    if start:
+        params["cosd"] = start
+    if end:
+        params["coed"] = end
+
+    request_fn = session.get if session else requests.get
+    resp = request_fn("https://fred.stlouisfed.org/graph/fredgraph.csv",
+                      params=params,
+                      timeout=timeout)
+    resp.raise_for_status()
+
+    df = pd.read_csv(io.StringIO(resp.text))
+    clean_cols = [c.strip().lstrip("\ufeff") for c in df.columns]
+    df.columns = clean_cols
+    lower_cols = {c.lower(): c for c in clean_cols}
+
+    date_col = None
+    for candidate in ("date", "observation_date"):
+        match = lower_cols.get(candidate)
+        if match:
+            date_col = match
+            break
+    if date_col is None:
+        raise ValueError(f"Unexpected FRED payload columns: {df.columns.tolist()}")
+
+    df = df.rename(columns={date_col: "DATE"})
+
+    value_col = None
+    for candidate in (series_id, "value"):
+        match = lower_cols.get(candidate.lower())
+        if match and match != "DATE":
+            value_col = match
+            break
+
+    if value_col is None:
+        candidates = [c for c in df.columns if c != "DATE"]
+        if len(candidates) != 1:
+            raise ValueError(f"Unexpected FRED payload columns: {df.columns.tolist()}")
+        value_col = candidates[0]
+
+    df = df.rename(columns={value_col: "VALUE"})
+    df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+    df["VALUE"] = pd.to_numeric(df["VALUE"], errors="coerce")
+
+    series = (df.dropna(subset=["DATE", "VALUE"])
+                .set_index("DATE")
+                .sort_index()["VALUE"])
+
+    return series
 
 
 def fetch_series_retry(key: str,
