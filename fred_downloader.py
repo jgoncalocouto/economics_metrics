@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict
 
 import pandas as pd
-import requests
+from fredapi import Fred
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -42,45 +42,19 @@ INTEREST_RATE_SERIES: Dict[str, str] = {
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
-
-
-# ---------------------------------------------------------------------------
-# Helper: thin wrapper around the API returning a Series
-# ---------------------------------------------------------------------------
-def fetch_fred_series(series_id: str) -> pd.Series:
-    """Download a single FRED series and return a float ``Series`` indexed by date."""
-
-    params = {
-        "series_id": series_id,
-        "api_key": FRED_API_KEY,
-        "file_type": "json",
-        "observation_start": OBSERVATION_START,
-    }
-    if OBSERVATION_END:
-        params["observation_end"] = OBSERVATION_END
-
-    response = requests.get(BASE_URL, params=params, timeout=30)
-    response.raise_for_status()
-
-    payload = response.json()
-    observations = payload.get("observations", [])
-
-    df = pd.DataFrame(observations)
-    if df.empty:
-        return pd.Series(dtype="float64")
-
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["value"] = pd.to_numeric(df["value"], errors="coerce")
-    series = df.dropna(subset=["date", "value"]).set_index("date")["value"]
-    return series.sort_index().astype("float64")
+# ``fredapi`` handles the HTTP layer and returns pandas ``Series`` out of the box.
+fred = Fred(api_key=FRED_API_KEY)
 
 
 # ---------------------------------------------------------------------------
 # Inflation: CPI level + YoY percentage change
 # ---------------------------------------------------------------------------
 print(f"Fetching inflation series ({INFLATION_SERIES_ID})")
-_cpi = fetch_fred_series(INFLATION_SERIES_ID)
+_cpi = fred.get_series(
+    INFLATION_SERIES_ID,
+    observation_start=OBSERVATION_START,
+    observation_end=OBSERVATION_END,
+)
 
 df_inflation = pd.DataFrame({
     "cpi_index": _cpi,
@@ -100,7 +74,11 @@ print(f"Saved -> {inflation_out}")
 interest_cols = []
 for name, series_id in INTEREST_RATE_SERIES.items():
     print(f"Fetching interest rate series {name} ({series_id})")
-    s = fetch_fred_series(series_id).rename(name)
+    s = fred.get_series(
+        series_id,
+        observation_start=OBSERVATION_START,
+        observation_end=OBSERVATION_END,
+    ).rename(name)
     interest_cols.append(s)
 
 if interest_cols:
